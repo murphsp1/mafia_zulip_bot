@@ -33,7 +33,11 @@ class Mafia:
         self.min_players = 2
 
 
+
     def send_text(self, number, text_string):
+        '''
+        This function is meant for messaging directly to one player
+        '''
         print "***MSG: ", text_string, "TO: ", number
 
         self.client.send_message({'type':'private',
@@ -42,6 +46,11 @@ class Mafia:
 
 
     def send_group(self, group_str, announcement):
+        '''
+        This function fires off private messages to everyone in the specified group
+        Not a fan of the implementation because it depends on the communications
+        layer.
+        '''
         if group_str == 'mafia':
             group = [player for player in self.player_list if player.mafia]
         elif group_str == 'innocents':
@@ -54,6 +63,23 @@ class Mafia:
         for person in group:
             m = {'type':'private', 'to':person.number, 'content':announcement}
             self.client.send_message(m)
+
+
+    def get_number_alive(self):
+        alive = [p for p in self.player_list if p.alive]
+        return len(alive)
+
+
+    def get_mafia_names(self):
+        mafia_names = [player.name for player in self.player_list if player.mafia]
+        return mafia_names
+
+
+    def get_player(self, number):
+        p = [player for player in self.player_list if player.number == number]
+        if p is not None:
+            p = p[0]
+        return p
 
 
     def tally_votes(self, group_str):
@@ -91,28 +117,6 @@ class Mafia:
             return False
 
 
-    def get_number_alive(self):
-        alive = [p for p in self.player_list if p.alive]
-        return len(alive)
-
-
-    def get_mafia_names(self):
-        mafia_names = [player.name for player in self.player_list if player.mafia]
-        return mafia_names
-
-
-    def mafia_wins(self):
-        self.send_group('all', 'Mafia wins.')
-        mafia_string = " ".join([x.capitalize() for x in self.get_mafia_names()])
-        self.send_group('all', "Here's who was in the mafia: " + mafia_string)
-        self.state = 'end'
-
-
-    def innocents_win(self):
-        self.send_group('all', 'The mafia was defeated!')
-        self.state = 'end'
-
-
     def check_end_condition(self):
         mafiosos = [player for player in self.player_list if (player.mafia and player.alive)]
         num_mafiosos = len(mafiosos)
@@ -130,6 +134,103 @@ class Mafia:
             return False
 
 
+    def mafia_wins(self):
+        self.send_group('all', 'Mafia wins.')
+        mafia_string = " ".join([x.capitalize() for x in self.get_mafia_names()])
+        self.send_group('all', "Here's who was in the mafia: " + mafia_string)
+        self.state = 'end'
+
+
+    def innocents_win(self):
+        self.send_group('all', 'The mafia was defeated!')
+        self.state = 'end'
+
+
+    def kill_player(self):
+        if self.to_kill != '':
+            player = [player for player in self.player_list if player.name == self.to_kill][0]
+            player.alive = False
+
+
+    def setup_game(self):
+        #send instructions (help)
+        self.prune()
+        self.help_message('all')
+        self.assign_groups()
+        self.begin_night()
+        self.state = 'night'
+
+
+    def join(self, word_list, number):
+        text_string = ''
+        if self.player_count >= self.min_players and 'begin' in word_list:
+            self.setup_game()
+        else:
+            if 'begin' in word_list:
+                text_string = 'Not enough players yet'
+            else:
+                if not number in [player.number for player in self.player_list]:
+                    text_string = "Welcome, what's your name?"
+                    self.player_list.append(self.Player(number))
+                else:
+                    name = word_list[0]
+                    if not name in [player.name for player in self.player_list]:
+                        this_player = [player for player in self.player_list if player.number == number]
+                        this_player[0].add_name(name)
+                        self.player_count += 1
+                        text_string = "Welcome to the game, " + name.capitalize() + "."
+                        if self.player_count >= self.min_players:
+                            self.send_group('all',
+                                            "Sufficient players have joined the game, text 'begin' if everyone's here.")
+                    else:
+                        text_string = "We already have someone named that, pick a different name."
+                self.send_text(number, text_string)
+
+
+    def begin_night(self):
+        self.kill_player()
+        if self.to_kill != '':
+            self.send_group('all', "The group has executed: " + self.to_kill)
+        self.to_kill = ""
+        if self.check_end_condition():
+            return
+        self.clear_ballots()
+        self.send_group('all', "the night has begun.")
+        self.send_group('mafia', "During the night, you can converse in secret.")
+        self.send_group('mafia', "Text 'kill' and a valid name to cast your vote.")
+        to_kill = [player for player in self.player_list if player.mafia == False and player.alive == True]
+        kill_string = ''
+        for potential_victim in to_kill:
+            kill_string += potential_victim.name.capitalize() + "\n"
+        self.send_group('mafia', "Here is who you may kill: " + kill_string)
+        #self.state = 'night'
+        #print "in begin night"
+
+
+    def night(self, text_list, number):
+        player = [player for player in self.player_list if player.number == number]
+        if player[0].mafia and player[0].alive:
+            self.mafia_night(text_list, player[0])
+            pass
+        else:
+            self.send_text(number, "it's night time... go back to sleep...")
+
+
+    def mafia_night(self, text_list, mafioso):
+        self.send_group('mafia', mafioso.name.capitalize() + " says: " + " ".join(text_list))
+        if 'kill' in text_list:
+            to_kill = text_list[1]
+            if to_kill.lower() in [player.name for player in self.player_list if not player.mafia and player.alive]:
+                if mafioso.ballot != '':
+                    self.send_text(mafioso.number,
+                                   "You have changed your voted from: " + mafioso.ballot + " to: " + to_kill)
+                mafioso.ballot = to_kill
+            else:
+                self.send_text(mafioso.number, "Not a valid name of someone to kill: " + to_kill)
+            if self.tally_votes('mafia'):
+                self.begin_day()
+
+
     def begin_day(self):
         self.kill_player()
         self.send_group('all', self.to_kill.capitalize() + " was killed last night.")
@@ -139,10 +240,6 @@ class Mafia:
         self.clear_ballots()
         self.send_group('all', "While everyone was sleeping, someone else died. Time to accuse the possible mafiosos.")
         self.state = "day"
-
-
-    def get_player(self, number):
-        return [player for player in self.player_list if player.number == number][0]
 
 
     def day(self, text_list, number):
@@ -162,36 +259,6 @@ class Mafia:
                 if self.tally_votes('all'):
                     self.begin_night()
                     self.state = 'night'
-
-
-    def kill_player(self):
-        if self.to_kill != '':
-            player = [player for player in self.player_list if player.name == self.to_kill][0]
-            player.alive = False
-
-
-    def mafia_night(self, text_list, mafioso):
-        self.send_group('mafia', mafioso.name.capitalize() + " says: " + " ".join(text_list))
-        if 'kill' in text_list:
-            to_kill = text_list[1]
-            if to_kill.lower() in [player.name for player in self.player_list if not player.mafia and player.alive]:
-                if mafioso.ballot != '':
-                    self.send_text(mafioso.number,
-                                   "You have changed your voted from: " + mafioso.ballot + " to: " + to_kill)
-                mafioso.ballot = to_kill
-            else:
-                self.send_text(mafioso.number, "Not a valid name of someone to kill: " + to_kill)
-            if self.tally_votes('mafia'):
-                self.begin_day()
-
-
-    def night(self, text_list, number):
-        player = [player for player in self.player_list if player.number == number]
-        if player[0].mafia and player[0].alive:
-            self.mafia_night(text_list, player[0])
-            pass
-        else:
-            self.send_text(number, "it's night time... go back to sleep...")
 
 
     def operator(self, msg):
@@ -243,61 +310,6 @@ class Mafia:
         print "in clear ballots **"
         for player in self.player_list:
             player.ballot = ''
-
-
-    def begin_night(self):
-        self.kill_player()
-        if self.to_kill != '':
-            self.send_group('all', "The group has executed: " + self.to_kill)
-        self.to_kill = ""
-        if self.check_end_condition():
-            return
-        self.clear_ballots()
-        self.send_group('all', "the night has begun.")
-        self.send_group('mafia', "During the night, you can converse in secret.")
-        self.send_group('mafia', "Text 'kill' and a valid name to cast your vote.")
-        to_kill = [player for player in self.player_list if player.mafia == False and player.alive == True]
-        kill_string = ''
-        for potential_victim in to_kill:
-            kill_string += potential_victim.name.capitalize() + "\n"
-        self.send_group('mafia', "Here is who you may kill: " + kill_string)
-        #self.state = 'night'
-        #print "in begin night"
-
-
-    def setup_game(self):
-        #send instructions (help)
-        self.prune()
-        self.help_message('all')
-        self.assign_groups()
-        self.begin_night()
-        self.state = 'night'
-
-
-    def join(self, word_list, number):
-        text_string = ''
-        if self.player_count >= self.min_players and 'begin' in word_list:
-            self.setup_game()
-        else:
-            if 'begin' in word_list:
-                text_string = 'Not enough players yet'
-            else:
-                if not number in [player.number for player in self.player_list]:
-                    text_string = "Welcome, what's your name?"
-                    self.player_list.append(self.Player(number))
-                else:
-                    name = word_list[0]
-                    if not name in [player.name for player in self.player_list]:
-                        this_player = [player for player in self.player_list if player.number == number]
-                        this_player[0].add_name(name)
-                        self.player_count += 1
-                        text_string = "Welcome to the game, " + name.capitalize() + "."
-                        if self.player_count >= self.min_players:
-                            self.send_group('all',
-                                            "Sufficient players have joined the game, text 'begin' if everyone's here.")
-                    else:
-                        text_string = "We already have someone named that, pick a different name."
-                self.send_text(number, text_string)
 
 
 
